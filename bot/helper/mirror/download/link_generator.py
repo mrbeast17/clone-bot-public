@@ -5,11 +5,18 @@ from bot import (
     HUBDRIVE_CRYPT,
     KATDRIVE_CRYPT,
     DRIVEFIRE_CRYPT,
+    XSRF_TOKEN,
+    laravel_session,
 )
 from bot.helper.others.exceptions import DirectDownloadLinkException
 import re
-import base64
+import os
+from time import sleep
+from selenium import webdriver
+from selenium.webdriver.common.by import By
 
+import base64
+import cloudscraper
 from lxml import etree
 from urllib.parse import urlparse, parse_qs
 import requests
@@ -75,7 +82,7 @@ def unified(url: str) -> str:
         raise DirectDownloadLinkException(
             "UNIFIED_EMAIL and UNIFIED_PASS env vars not provided"
         )
-    client = requests.Session()
+    client = cloudscraper.create_scraper(delay=10, browser='chrome')
     client.headers.update(
         {
             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.99 Safari/537.36"
@@ -119,11 +126,18 @@ def unified(url: str) -> str:
         info_parsed["error"] = True
         info_parsed["error_message"] = "Something went wrong :("
 
-    if urlparse(url).netloc == "appdrive.in" and not info_parsed["error"]:
+    if info_parsed["error"]:
+        raise DirectDownloadLinkException(f"ERROR! {info_parsed['error_message']}")
+
+    if urlparse(url).netloc == "appdrive.in":
+        flink = info_parsed["gdrive_link"]
+        return flink
+    
+    elif urlparse(url).netloc == "gdflix.pro":
         flink = info_parsed["gdrive_link"]
         return flink
 
-    if urlparse(url).netloc == "driveapp.in" and not info_parsed["error"]:
+    elif urlparse(url).netloc == "driveapp.in":
         res = client.get(info_parsed["gdrive_link"])
         drive_link = etree.HTML(res.content).xpath("//a[contains(@class,'btn')]/@href")[
             0
@@ -131,48 +145,37 @@ def unified(url: str) -> str:
         flink = drive_link
         return flink
 
-    if urlparse(url).netloc == "drivesharer.in" and not info_parsed["error"]:
+    else:
         res = client.get(info_parsed["gdrive_link"])
         drive_link = etree.HTML(res.content).xpath(
             "//a[contains(@class,'btn btn-primary')]/@href"
         )[0]
         flink = drive_link
         return flink
+    
 
-    if urlparse(url).netloc == "drivebit.in" and not info_parsed["error"]:
-        res = client.get(info_parsed["gdrive_link"])
-        drive_link = etree.HTML(res.content).xpath(
-            "//a[contains(@class,'btn btn-primary')]/@href"
-        )[0]
-        flink = drive_link
-        return flink
-
-    if urlparse(url).netloc == "driveace.in" and not info_parsed["error"]:
-        res = client.get(info_parsed["gdrive_link"])
-        drive_link = etree.HTML(res.content).xpath(
-            "//a[contains(@class,'btn btn-primary')]/@href"
-        )[0]
-        flink = drive_link
-        return flink
-
-    flink = info_parsed["gdrive_link"]
-    info_parsed["src_url"] = url
-
-    return flink
-
-
-def parse_info(res):
+def parse_info(res, url):
     info_parsed = {}
-    title = re.findall(">(.*?)<\/h4>", res.text)[0]
-    info_chunks = re.findall(">(.*?)<\/td>", res.text)
-    info_parsed["title"] = title
+    if 'drivebuzz' in url:
+        info_chunks = re_findall('<td\salign="right">(.*?)<\/td>', res.text)
+    elif 'sharer.pw' in url:
+        f = re.findall(">(.*?)<\/td>", res.text)
+        info_parsed = {}
+        for i in range(0, len(f), 3):
+            info_parsed[f[i].lower().replace(" ", "_")] = f[i + 2]
+        return info_parsed
+    else:
+        info_chunks = re.findall(">(.*?)<\/td>", res.text)
     for i in range(0, len(info_chunks), 2):
         info_parsed[info_chunks[i]] = info_chunks[i + 1]
     return info_parsed
 
 
 def udrive(url: str) -> str:
-    client = requests.Session()
+    if 'katdrive' in url:
+        client = requests.Session()
+    else:
+        client = cloudscraper.create_scraper(delay=10, browser='chrome')
     if "hubdrive" in url:
         client.cookies.update({"crypt": HUBDRIVE_CRYPT})
     if "drivehub" in url:
@@ -183,8 +186,10 @@ def udrive(url: str) -> str:
         client.cookies.update({"crypt": KATDRIVE_CRYPT})
     if "drivefire" in url:
         client.cookies.update({"crypt": DRIVEFIRE_CRYPT})
+    if "drivebuzz" in url:
+        client.cookies.update({"crypt": DRIVEFIRE_CRYPT})
     res = client.get(url)
-    info_parsed = parse_info(res)
+    info_parsed = parse_info(res, url)
     info_parsed["error"] = False
 
     up = urlparse(url)
@@ -199,14 +204,101 @@ def udrive(url: str) -> str:
     try:
         res = client.post(req_url, headers=headers, data=data).json()["file"]
     except:
-        return {"error": True, "src_url": url}
+        raise DirectDownloadLinkException(
+            "ERROR! File Not Found or User rate exceeded !!"
+        )
 
-    if "drivefire.co" in url:
-        return res
+    if 'drivefire' in url:
+        decoded_id = res.rsplit('/', 1)[-1]
+        flink = f"https://drive.google.com/file/d/{decoded_id}"
+        return flink
+    elif 'drivehub' in url:
+        gd_id = res.rsplit("=", 1)[-1]
+        flink = f"https://drive.google.com/open?id={gd_id}"
+        return flink
+    elif 'drivebuzz' in url:
+        gd_id = res.rsplit("=", 1)[-1]
+        flink = f"https://drive.google.com/open?id={gd_id}"
+        return flink
     else:
-        gd_id = re.findall("gd=(.*)", res, re.DOTALL)[0]
+        gd_id = re.findall('gd=(.*)', res, re.DOTALL)[0]
 
     info_parsed["gdrive_url"] = f"https://drive.google.com/open?id={gd_id}"
     info_parsed["src_url"] = url
+    flink = info_parsed['gdrive_url']
 
-    return info_parsed["gdrive_url"]
+    return flink
+    
+
+
+def sharer_pw_dl(url, forced_login=False):
+    
+    client = cloudscraper.create_scraper(delay=10, browser="chrome")
+    
+    client.cookies.update(
+        {"XSRF-TOKEN": XSRF_TOKEN, "laravel_session": laravel_session}
+    )
+
+    res = client.get(url)
+    token = re.findall("token\s=\s'(.*?)'", res.text, re.DOTALL)[0]
+
+    ddl_btn = etree.HTML(res.content).xpath("//button[@id='btndirect']")
+
+    info_parsed = parse_info(res, url)
+    info_parsed["error"] = True
+    info_parsed["src_url"] = url
+    info_parsed["link_type"] = "login"  # direct/login
+    info_parsed["forced_login"] = forced_login
+
+    headers = {
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "x-requested-with": "XMLHttpRequest",
+    }
+
+    data = {"_token": token}
+
+    if len(ddl_btn):
+        info_parsed["link_type"] = "direct"
+    if not forced_login:
+        data["nl"] = 1
+
+    try:
+        res = client.post(url + "/dl", headers=headers, data=data).json()
+    except:
+        return info_parsed
+
+    if "url" in res and res["url"]:
+        info_parsed["error"] = False
+        info_parsed["gdrive_link"] = res["url"]
+
+    if len(ddl_btn) and not forced_login and not "url" in info_parsed:
+        # retry download via login
+        return sharer_pw_dl(url, forced_login=True)
+
+    try:
+        flink = info_parsed["gdrive_link"]
+        return flink
+    except:
+        raise DirectDownloadLinkException(
+            "ERROR! File Not Found or User rate exceeded !!"
+        )
+        
+def drivehubs(url: str) -> str:
+    os.chmod('/usr/src/app/chromedriver', 755)
+    chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    wd = webdriver.Chrome('/usr/src/app/chromedriver', chrome_options=chrome_options)
+    
+    Ok = wd.get(url)
+    wd.find_element(By.XPATH, '//button[@id="fast"]').click()
+    sleep(10)
+    wd.switch_to.window(wd.window_handles[-1])
+    flink = wd.current_url
+    wd.close()
+    
+    if 'drive.google.com' in flink:
+      return flink
+    else:
+      raise DirectDownloadLinkException(f"ERROR! Maybe Direct Download is not working for this file !\n Retrived URL : {flink}")
